@@ -29,10 +29,6 @@ env/
 # ---- 本地配置与临时文件 ----
 .env
 *.local
-_*.py
-_*.js
-_*.png
-_*.log
 .DS_Store
 Thumbs.db
 
