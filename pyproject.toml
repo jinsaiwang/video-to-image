@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "matte-studio"
-version = "0.1.0"
+version = "0.2.0"
 description = "视频转透明连续帧：抽帧 + 调速 + 抠图，本地可视化工作流"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -31,6 +31,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# 推荐：约 100 MB，CPU 可用，Windows / Linux / macOS 通吃
+onnx = ["onnxruntime>=1.17"]
+# 有 NVIDIA 显卡且已装 CUDA 时，把上一行的 onnxruntime 换成 onnxruntime-gpu
+# 原权重路线：约 3 GB，仅在前者不可用时才需要
+torch = [
+  "torch>=2.0",
+  "torchvision>=0.15",
+  "transformers>=4.40",
+  "safetensors>=0.4",
+]
+# 兼容旧名，等价于 torch
 gpu = [
   "torch>=2.0",
   "torchvision>=0.15",

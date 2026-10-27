@@ -3,7 +3,7 @@
 优先级（从高到低）：
     1. 命令行参数
     2. 环境变量（MATTE_MODEL_DIR / MATTE_JOBS_DIR / MATTE_HOST / MATTE_PORT）
-    3. 当前目录下的 ./RMBG-2.0 与 ./jobs（便于「克隆后直接跑」）
+    3. 当前目录下的 ./RMBG-2.0-onnx、./RMBG-2.0 与 ./jobs（便于「克隆后直接跑」）
     4. 用户目录 ~/.matte-studio/{models, jobs}
 """
 
@@ -13,8 +13,14 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .backends import detect
+
 APP_DIR_NAME = ".matte-studio"
-MODEL_DIR_NAME = "RMBG-2.0"
+# 查找顺序：先找 torch 权重目录（有 GPU 时它最快），再找 ONNX 目录（装了就能跑）。
+# 两者都在时可以用 --backend onnx 强制走轻量路线。
+MODEL_DIR_NAMES = ("RMBG-2.0", "RMBG-2.0-onnx")
+# `matte download` 默认下载到这里
+DOWNLOAD_DIR_NAME = "RMBG-2.0-onnx"
 
 
 def user_data_dir() -> Path:
@@ -31,28 +37,25 @@ def _as_path(value) -> Path | None:
     return Path(value).expanduser()
 
 
-def _is_model_dir(path: Path | None) -> bool:
-    if not path or not path.is_dir():
-        return False
-    # 有 config.json 且至少有一个权重文件，才认为可用
-    has_cfg = (path / "config.json").is_file()
-    has_weight = any((path / n).is_file() for n in
-                     ("model.safetensors", "pytorch_model.bin"))
-    return has_cfg and has_weight
+def model_candidates(explicit: str | Path | None = None) -> list[Path]:
+    """按优先级列出所有可能的模型目录。"""
+    out: list[Path] = []
+    for p in (_as_path(explicit), _as_path(os.environ.get("MATTE_MODEL_DIR"))):
+        if p:
+            out.append(p)
+    for name in MODEL_DIR_NAMES:
+        out.append(Path.cwd() / name)
+    for name in MODEL_DIR_NAMES:
+        out.append(user_data_dir() / "models" / name)
+    return out
 
 
 def resolve_model_dir(explicit: str | Path | None = None) -> Path | None:
-    candidates = [
-        _as_path(explicit),
-        _as_path(os.environ.get("MATTE_MODEL_DIR")),
-        Path.cwd() / MODEL_DIR_NAME,
-        user_data_dir() / "models" / MODEL_DIR_NAME,
-    ]
-    for p in candidates:
-        if _is_model_dir(p):
+    for p in model_candidates(explicit):
+        if detect(p):
             return p
-    # 都没找到时返回「期望位置」，用于提示用户放哪里
-    return candidates[2]
+    # 都没找到时返回「期望位置」，用于提示用户放哪里 / 下载到哪里
+    return Path.cwd() / DOWNLOAD_DIR_NAME
 
 
 def resolve_jobs_dir(explicit: str | Path | None = None) -> Path:
@@ -68,16 +71,18 @@ def resolve_jobs_dir(explicit: str | Path | None = None) -> Path:
 class Config:
     model_dir: Path | None = None
     jobs_dir: Path = field(default_factory=resolve_jobs_dir)
+    backend: str = "auto"          # auto | onnx | torch
     host: str = "127.0.0.1"
     port: int = 7860
     open_browser: bool = True
 
     @classmethod
     def load(cls, model_dir=None, jobs_dir=None, host=None,
-             port=None, open_browser=None) -> "Config":
+             port=None, open_browser=None, backend=None) -> "Config":
         cfg = cls(
             model_dir=resolve_model_dir(model_dir),
             jobs_dir=resolve_jobs_dir(jobs_dir),
+            backend=backend or os.environ.get("MATTE_BACKEND") or "auto",
             host=host or os.environ.get("MATTE_HOST") or "127.0.0.1",
             port=int(port or os.environ.get("MATTE_PORT") or 7860),
             open_browser=True if open_browser is None else bool(open_browser),
@@ -87,22 +92,39 @@ class Config:
 
     # ---------- 校验 ----------
     @property
+    def detected_backend(self) -> str | None:
+        return detect(self.model_dir)
+
+    @property
+    def active_backend(self) -> str | None:
+        """实际会用的后端：显式指定优先，否则按目录内容判断。"""
+        return None if self.backend == "auto" else self.backend
+
+    @property
     def model_ready(self) -> bool:
-        return _is_model_dir(self.model_dir)
+        return self.detected_backend is not None
+
+    @property
+    def effective_backend(self) -> str:
+        """最终会用的后端名，用于显示设备与日志（永不返回 auto）。"""
+        return self.active_backend or self.detected_backend or "auto"
 
     def require_model(self) -> Path:
         if not self.model_ready:
             raise FileNotFoundError(
-                f"找不到抠图模型：{self.model_dir}\n"
-                f"请把 RMBG-2.0 放进去，或用 --model-dir / MATTE_MODEL_DIR 指定。\n"
-                f"下载地址：https://huggingface.co/briaai/RMBG-2.0"
+                f"找不到可用的抠图模型：{self.model_dir}\n"
+                f"一行命令下载（国内加 --mirror cn）：\n"
+                f"    matte download\n"
+                f"或用 --model-dir / MATTE_MODEL_DIR 指向已有权重目录。"
             )
         return self.model_dir
 
     def describe(self) -> str:
+        backend = self.active_backend or self.detected_backend or "未就绪"
         return "\n".join([
             f"模型目录：{self.model_dir}"
-            + ("" if self.model_ready else "   [未就绪]"),
+            + ("" if self.model_ready else "   [未就绪，可运行 matte download]"),
+            f"推理后端：{backend}",
             f"输出目录：{self.jobs_dir}",
             f"监听地址：{self.host}:{self.port}",
         ])

@@ -342,9 +342,13 @@ const state = { jobId: null, total: 0, fps: 24, playing: false, frames: [],
 
 // ---------- 环境信息 ----------
 fetch('/api/info').then(r => r.json()).then(info => {
-  $('#meta').innerHTML = `推理设备 <b>${info.device}</b> · torch ${info.torch}` +
+  const ver = info.backend === 'onnx'
+    ? `onnxruntime ${info.onnxruntime || '?'}`
+    : (info.torch ? `torch ${info.torch}` : '');
+  $('#meta').innerHTML = `推理后端 <b>${info.backend || '未就绪'}</b> · ${ver} · ${info.device}` +
     (info.model_exists ? '' : ' · <span style="color:#A32D2D">模型缺失</span>');
-  if (!info.model_exists) showBanner('err', `没有找到模型权重：${info.model_dir}\\model.safetensors`);
+  if (!info.model_exists)
+    showBanner('err', `没有找到模型权重（${info.model_dir}）。在项目目录运行 matte download --mirror cn 即可下载。`);
 }).catch(() => $('#meta').textContent = '无法连接本地服务');
 
 function showBanner(kind, text) {

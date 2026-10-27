@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from . import __version__, runner
 from .config import Config
 from .jobs import Job, JobStore
-from .matte import ModelHub
+from .backends import device_label
 from .naming import clean_prefix, safe_name
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -46,6 +46,7 @@ class App:
         with self.gpu_lock:
             try:
                 runner.run_job(job, self.config.require_model(),
+                               backend=self.config.active_backend or "auto",
                                on_progress=lambda ev: job.emit(**ev),
                                should_stop=job.stop_flag.is_set)
                 job.status = "cancelled" if job.stop_flag.is_set() else "done"
@@ -121,17 +122,19 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/info":
             cfg = self.app.config
-            try:
-                import torch
-                torch_version = torch.__version__
-            except ImportError:
-                torch_version = "未安装"
+            versions = {}
+            for mod, label in (("onnxruntime", "onnxruntime"), ("torch", "torch")):
+                try:
+                    versions[label] = __import__(mod).__version__
+                except ImportError:
+                    versions[label] = None
             return self._json({
                 "version": __version__,
                 "model_dir": str(cfg.model_dir),
                 "model_exists": cfg.model_ready,
-                "torch": torch_version,
-                "device": ModelHub.device_name(),
+                "backend": cfg.effective_backend,
+                **versions,
+                "device": device_label(cfg.effective_backend, cfg.model_dir),
                 "jobs_dir": str(cfg.jobs_dir),
             })
 

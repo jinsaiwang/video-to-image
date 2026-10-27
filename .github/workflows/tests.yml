@@ -22,13 +22,13 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # 只装包本身、不装依赖：核心测试只覆盖纯逻辑（命名规则、调速映射），
-      # 不需要 torch / OpenCV，几十秒就能跑完。
+      # 不装 opencv / torch：测试只覆盖纯逻辑与张量预处理，
+      # 用 numpy + Pillow 就够，几十秒跑完。
       - name: 安装（不装依赖）
         run: pip install --no-deps -e .
 
-      - name: 安装 pytest
-        run: pip install pytest
+      - name: 安装测试依赖
+        run: pip install numpy Pillow pytest
 
       - name: 运行测试
         run: pytest -v

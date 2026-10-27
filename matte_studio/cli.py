@@ -1,6 +1,7 @@
 """命令行入口。
 
     matte                 # 等同于 matte serve
+    matte download        # 下载 ONNX 模型（支持 --mirror cn）
     matte serve           # 启动本地可视化服务
     matte run in.mp4 …    # 无界面直接跑完整流水线
     matte info            # 打印当前配置与设备信息
@@ -18,8 +19,10 @@ from .jobs import Job
 
 
 def _add_common(p: argparse.ArgumentParser):
-    p.add_argument("--model-dir", help="RMBG-2.0 模型目录（默认自动查找）")
+    p.add_argument("--model-dir", help="模型目录（默认自动查找 RMBG-2.0-onnx / RMBG-2.0）")
     p.add_argument("--jobs-dir", help="任务输出根目录")
+    p.add_argument("--backend", choices=["auto", "onnx", "torch"], default=None,
+                   help="推理后端，默认 auto（按模型目录内容自动判断）")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -54,17 +57,49 @@ def build_parser() -> argparse.ArgumentParser:
     p_info = sub.add_parser("info", help="查看配置与设备信息")
     _add_common(p_info)
 
+    # ---- download ----
+    p_dl = sub.add_parser("download", help="下载 ONNX 模型（约 976 MB，支持国内镜像）")
+    _add_common(p_dl)
+    p_dl.add_argument("--variant", choices=["fp32", "fp16", "int8"], default="fp32",
+                      help="fp32 全精度（默认）/ fp16 半精度 / int8 量化")
+    p_dl.add_argument("--mirror", nargs="?", const="cn", default=None,
+                      help="下载源：hf / cn（hf-mirror.com）/ 任意 URL，默认读 HF_ENDPOINT")
+    p_dl.add_argument("--force", action="store_true", help="已存在也重新下载")
+
     return parser
 
 
 def cmd_info(config: Config) -> int:
-    from .matte import ModelHub
+    from .backends import device_label
     print(f"版本：{__version__}")
     print(config.describe())
-    print(f"推理设备：{ModelHub.device_name()}")
+    print(f"推理设备：{device_label(config.effective_backend, config.model_dir)}")
     if not config.model_ready:
-        print("\n[提示] 模型未就绪。下载后放到上面的模型目录，或用 --model-dir 指定：")
-        print("       https://huggingface.co/briaai/RMBG-2.0")
+        print("\n[提示] 模型未就绪。一条命令搞定（国内网络加 --mirror cn）：")
+        print("       matte download --mirror cn")
+    return 0
+
+
+def cmd_download(config: Config, args) -> int:
+    from . import models
+    from .config import DOWNLOAD_DIR_NAME
+
+    dest = (Path(args.model_dir).expanduser() if args.model_dir
+            else Path.cwd() / DOWNLOAD_DIR_NAME)
+    endpoint = models.resolve_endpoint(args.mirror)
+    print(f"目标目录：{dest}")
+    print(f"下载源　：{endpoint}")
+    try:
+        path = models.ensure_onnx_model(dest, variant=args.variant,
+                                        mirror=args.mirror, force=args.force)
+    except Exception as exc:
+        print(f"[失败] {exc}", file=sys.stderr)
+        return 1
+
+    size = path.stat().st_size / 1048576
+    print(f"完成：{path}（{size:.0f} MB）")
+    print("\n下一步：matte serve")
+    print(f"若模型不在默认位置，设置环境变量：setx MATTE_MODEL_DIR \"{dest}\"")
     return 0
 
 
@@ -120,7 +155,9 @@ def cmd_run(config: Config, args) -> int:
         last_stage[0] = stage
 
     try:
-        result = runner.run_job(job, config.model_dir, on_progress=on_progress)
+        result = runner.run_job(job, config.model_dir,
+                                backend=config.active_backend or "auto",
+                                on_progress=on_progress)
     except KeyboardInterrupt:
         print("\n已中断，已完成的帧保留在输出目录", file=sys.stderr)
         return 130
@@ -132,7 +169,7 @@ def cmd_run(config: Config, args) -> int:
             print("", file=sys.stderr)
 
     print(f"完成：{result['frames']} 帧 · {result['duration']} 秒 · "
-          f"速度 {result['speed']}× · {result['device']}")
+          f"速度 {result['speed']}× · {result['backend']} · {result['device']}")
     print(f"输出：{job.dir / 'alpha'}")
     return 0
 
@@ -147,11 +184,14 @@ def main(argv=None) -> int:
         jobs_dir=getattr(args, "jobs_dir", None),
         host=getattr(args, "host", None),
         port=getattr(args, "port", None),
+        backend=getattr(args, "backend", None),
         open_browser=(False if getattr(args, "no_browser", False) else None),
     )
 
     if command == "info":
         return cmd_info(config)
+    if command == "download":
+        return cmd_download(config, args)
     if command == "run":
         return cmd_run(config, args)
     return cmd_serve(config)

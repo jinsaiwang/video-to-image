@@ -6,13 +6,14 @@ import json
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import frames, matte
+from . import backends, frames, matte
 from .naming import frame_name
 
 
 def run_job(
     job,
     model_dir: Path,
+    backend: str = "auto",
     on_progress: Optional[Callable[[dict], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> dict:
@@ -48,14 +49,20 @@ def run_job(
          msg=f"抽帧完成，共 {ex['saved']} 帧")
 
     # ---- 阶段 2：抠图 ----
-    emit(stage="load_model", done=0, total=1, msg="加载抠图模型（首次约 7 秒）")
-    model, device = matte.ModelHub.get(model_dir)
-    emit(stage="load_model", done=1, total=1, msg=f"模型就绪 · {matte.ModelHub.device_name()}")
+    emit(stage="load_model", done=0, total=1,
+         msg="加载抠图模型（首次约 2~7 秒，取决于后端）")
+    try:
+        be = backends.load(backend, model_dir)
+    except ImportError as exc:
+        from .backends.base import find_backend_error
+        hint = find_backend_error(exc, backend)
+        raise ImportError(hint or str(exc)) from exc
+    emit(stage="load_model", done=1, total=1, msg=f"模型就绪 · {be.describe()}")
 
     def _progress(i, total, ms, name):
         emit(stage="matte", done=i, total=total, ms=round(ms), msg=name, index=i - 1)
 
-    mt = matte.matte_frames(frame_dir, alpha_dir, model, device,
+    mt = matte.matte_frames(frame_dir, alpha_dir, be,
                             on_progress=_progress, should_stop=should_stop)
     emit(stage="matte", done=mt["total"] - mt["skipped"], total=mt["total"],
          msg=(f"抠图完成：新增 {mt['done']}，复用重复帧 {mt['duplicated']}，"
@@ -82,7 +89,8 @@ def run_job(
         "matte": mt,
         "frame_dir": str(frame_dir),
         "alpha_dir": str(alpha_dir),
-        "device": matte.ModelHub.device_name(),
+        "device": mt["device"],
+        "backend": mt["backend"],
     }
     (job_dir / "result.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
