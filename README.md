@@ -192,7 +192,7 @@ pip install numpy Pillow pytest
 pytest
 ```
 
-CI 会在 Python 3.9 / 3.11 / 3.12 上跑同一套测试（不装 torch、不装 OpenCV）。
+CI 会在 Python 3.10 / 3.11 / 3.12 上跑同一套测试（不装 torch、不装 OpenCV）。
 
 ## 配置项
 
