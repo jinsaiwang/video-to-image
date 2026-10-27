@@ -79,13 +79,25 @@ def download_file(url: str, dest: Path, on_progress=None, timeout: int = 60) -> 
     return dest
 
 
+_last_step = [-1]
+
+
 def _console_progress(done: int, total: int, speed: float):
+    """终端里原地刷新；被重定向到文件时改为每 10% 打一行，避免刷屏。"""
     if total:
         pct = done / total * 100
-        msg = f"  下载中 {done / 1048576:.1f} / {total / 1048576:.1f} MB ({pct:.0f}%)  {speed / 1048576:.1f} MB/s"
+        msg = (f"  下载中 {done / 1048576:.1f} / {total / 1048576:.1f} MB "
+               f"({pct:.0f}%)  {speed / 1048576:.1f} MB/s")
+        step = int(pct // 10)
     else:
         msg = f"  下载中 {_fmt(done)}  {speed / 1048576:.1f} MB/s"
-    print("\r\033[K" + msg, end="", file=sys.stderr, flush=True)
+        step = int(done // (64 * 1048576))
+
+    if sys.stderr.isatty():
+        print("\r\033[K" + msg, end="", file=sys.stderr, flush=True)
+    elif step != _last_step[0]:
+        print(msg, file=sys.stderr, flush=True)
+    _last_step[0] = step
 
 
 def ensure_onnx_model(
