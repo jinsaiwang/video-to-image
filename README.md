@@ -103,6 +103,10 @@ matte download                 # 海外直连 huggingface.co
 matte serve          # 或双击 启动.bat
 ```
 
+> **Windows 桌面快捷方式**：新建快捷方式，目标填 `python.exe`，参数 `-m matte_studio serve`，
+> 「起始位置」填项目目录，图标选 `assets/matte.ico`。起始位置很关键——`python -m`
+> 会把当前目录加进模块搜索路径，少了它就要额外设 `PYTHONPATH`。
+
 浏览器会自动打开 <http://127.0.0.1:7860>。流程：
 
 1. 拖入视频（此时只上传，不会开始处理）
@@ -176,7 +180,8 @@ matte_studio/
 ├── runner.py         串联抽帧 → 抠图 → 落盘
 ├── server.py         本地 HTTP 服务 + SSE 进度推送
 ├── cli.py            命令行入口
-└── web/index.html    单文件界面
+├── web/index.html    单文件界面
+└── assets/matte.ico  应用图标（多尺寸，由 tools/make_icon.py 生成）
 ```
 
 抠图逻辑与推理运行时是分开的：`matte.py` 只管「把一整个目录的帧可靠地处理完」，
