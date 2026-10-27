@@ -56,7 +56,7 @@ dev = [
 matte = "matte_studio.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/jinsaiwang/matte-studio"
+Homepage = "https://github.com/jinsaiwang/video-to-image"
 
 [tool.setuptools.packages.find]
 include = ["matte_studio*"]

@@ -37,8 +37,8 @@
 | 本机实测 | 15 s/帧（CPU） | **0.71 s/帧**（RTX 5060） |
 
 ```bash
-git clone https://github.com/jinsaiwang/matte-studio.git
-cd matte-studio
+git clone https://github.com/jinsaiwang/video-to-image.git
+cd video-to-image
 
 # 方案 A：轻量（推荐先试这个）
 pip install -e ".[onnx]"
