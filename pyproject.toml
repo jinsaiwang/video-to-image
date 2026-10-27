@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "matte-studio"
+version = "0.1.0"
+description = "视频转透明连续帧：抽帧 + 调速 + 抠图，本地可视化工作流"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "jinsaiwang" }]
+keywords = ["video", "matting", "background-removal", "alpha", "frames", "rmbg", "birefnet"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Web Environment",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Video",
+  "Topic :: Multimedia :: Graphics :: Editors",
+]
+
+# 基础依赖刻意保持轻量：装了就能启动界面、抽帧、调速，只是还不能抠图。
+# 推理依赖 2GB+ 且是否装 CUDA 版因人而异，所以放进可选依赖。
+dependencies = [
+  "numpy>=1.23",
+  "opencv-python>=4.8",
+  "Pillow>=9.5",
+]
+
+[project.optional-dependencies]
+gpu = [
+  "torch>=2.0",
+  "torchvision>=0.15",
+  "transformers>=4.40",
+  "safetensors>=0.4",
+]
+dev = [
+  "pytest>=7",
+]
+
+[project.scripts]
+matte = "matte_studio.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/jinsaiwang/matte-studio"
+
+[tool.setuptools.packages.find]
+include = ["matte_studio*"]
+
+[tool.setuptools.package-data]
+matte_studio = ["web/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

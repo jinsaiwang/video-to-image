@@ -1,0 +1,42 @@
+# ---- 任务产物（每个任务约 250MB，绝不入库）----
+jobs/
+*.mp4
+*.mov
+*.mkv
+*.webm
+
+# ---- 模型权重：GitHub 单文件上限 100MB，必须排除 ----
+RMBG-2.0/
+*.safetensors
+*.bin
+*.onnx
+*.pt
+*.pth
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- 本地配置与临时文件 ----
+.env
+*.local
+_*.py
+_*.js
+_*.png
+_*.log
+.DS_Store
+Thumbs.db
+
+# ---- 编辑器 ----
+.idea/
+.vscode/
+*.swp

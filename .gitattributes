@@ -1,0 +1,12 @@
+# 默认统一成 LF 存储，检出时按平台转换
+* text=auto
+
+# Windows 批处理必须是 CRLF，否则 cmd 会跳过部分命令行（踩过这个坑）
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 明确二进制，避免被当文本处理
+*.png binary
+*.jpg binary
+*.safetensors binary
+*.onnx binary
