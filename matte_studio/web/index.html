@@ -21,8 +21,20 @@
     font-size:14px; line-height:1.6; -webkit-font-smoothing:antialiased;
   }
   .wrap{max-width:940px; margin:0 auto; padding:32px 24px 64px}
-  header{display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:22px}
-  #btnBack{align-self:center; margin-right:2px}
+  header{display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:16px}
+
+  /* 顶部导航：三个页面随时互达，不再需要「返回」 */
+  .tabs{display:flex; gap:2px; margin:0 0 18px; border-bottom:1px solid var(--line)}
+  .tab{border:0; background:transparent; font-family:inherit; font-size:13px;
+       color:var(--ink-2); padding:8px 14px 9px; cursor:pointer; margin-bottom:-1px;
+       border-bottom:2px solid transparent; border-radius:6px 6px 0 0; transition:.12s}
+  .tab:hover{color:var(--ink); background:#F4F3EF}
+  .tab.on{color:var(--accent); border-bottom-color:var(--accent); font-weight:500}
+  .tab:disabled{color:#C6C4BB; cursor:not-allowed; background:transparent}
+  .tab .badge{display:none; min-width:16px; padding:0 5px; margin-left:6px; font-size:10.5px;
+              line-height:16px; text-align:center; border-radius:8px; vertical-align:1px;
+              background:var(--accent-bg); color:var(--accent)}
+  .tab.on .badge{background:var(--accent); color:#fff}
   .recent-list{display:flex; flex-wrap:wrap; gap:8px}
   .recent-item{display:flex; flex-direction:column; align-items:flex-start; gap:2px;
     border:1px solid var(--line); background:#fff; border-radius:8px; padding:8px 12px;
@@ -208,10 +220,15 @@
 <body>
 <div class="wrap">
   <header>
-    <button class="btn sm" id="btnBack" style="display:none">← 返回</button>
     <h1>视频 → 透明连续帧</h1>
     <div class="meta" id="meta">正在读取环境…</div>
   </header>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab" id="tabImport" data-go="import">导入</button>
+    <button class="tab" id="tabRun" data-go="run">处理中<i class="badge" id="tabRunCount"></i></button>
+    <button class="tab" id="tabResult" data-go="result">结果</button>
+  </nav>
 
   <div class="banner hide" id="banner"></div>
 
@@ -384,7 +401,8 @@
 <script>
 const $ = s => document.querySelector(s);
 const state = { jobId: null, total: 0, fps: 24, playing: false, frames: [],
-                loaded: 0, es: null, view: 'import', queue: null, jobName: '' };
+                loaded: 0, es: null, view: 'import', queue: null, jobName: '',
+                recent: [], tabRunTarget: null, tabResultTarget: null };
 
 // 文件名可能带 < > & 等字符，塞进 innerHTML 前必须转义
 const esc = s => String(s ?? '').replace(/[&<>"]/g,
@@ -466,6 +484,7 @@ function renderQueue(q) {
   });
   $('#qList').innerHTML = html;
   renderQueuedNote();
+  renderTabs();                    // 处理中/等待的数量会影响导航上的角标
 }
 
 // 当前正在看的任务如果还在排队，就在运行页顶部说明「前面还有几个」
@@ -502,38 +521,74 @@ $('#qList').addEventListener('click', e => {
 });
 
 
-// ---------- 视图路由：让浏览器返回键可用、刷新不丢状态 ----------
+// ---------- 视图路由：顶部标签栏随便跳，浏览器前后退也能用 ----------
 function setView(view, push = true) {
   state.view = view;
   $('#sec-import').classList.toggle('hidden', view !== 'import');
   $('#sec-run').classList.toggle('hidden', view !== 'run');
   $('#sec-result').classList.toggle('hidden', view !== 'result');
-  $('#btnBack').style.display = view === 'import' ? 'none' : 'inline-flex';
 
   const url = view === 'import'
     ? location.pathname
     : `${location.pathname}?job=${encodeURIComponent(state.jobId)}`;
-  // fromApp 记录「这条历史是我们自己推的」，返回时才知道能不能退
-  const st = { view, job: state.jobId,
-               fromApp: push || !!(history.state && history.state.fromApp) };
-  if (push) {
-    history.pushState(st, '', url);
-  } else {
-    history.replaceState(st, '', url);
-  }
+  const st = { view, job: state.jobId };
+  if (push) history.pushState(st, '', url);
+  else history.replaceState(st, '', url);
+
   if (view !== 'import' && state.jobId) {
     try { localStorage.setItem('matte_last_job', state.jobId); } catch (e) {}
   }
   if (view === 'import') loadRecent();
   if (state.queue) renderQueue(state.queue);   // 队列卡片只在导入页显示
+  renderTabs();
 }
 
-// 「返回」必须用 back()，不能 pushState：压新记录的话历史里永远没有「下一条」，
-// 浏览器的前进按钮就一直是灰的 —— 退回导入页之后再也点不回进度页。
-function goImport() {
-  if (history.state && history.state.fromApp) history.back();
-  else setView('import', false);              // 直接打开的链接，没有可退的历史
+// ---------- 顶部导航 ----------
+// 三个页面各自记住「该去哪」：处理中去正在跑的那个，结果去最后看的那个（没有就最新一个）。
+// 不用「返回」按钮，是因为它只能退一步；标签栏可以一步到位。
+function tabTargets() {
+  const q = state.queue || {};
+  const running = q.running, waiting = q.waiting || [];
+  const recent = state.recent || [];
+
+  const runId = (state.view === 'run' && state.jobId) ? state.jobId
+              : (running ? running.id : (waiting[0] && waiting[0].id) || null);
+  const resultId = (state.view === 'result' && state.jobId) ? state.jobId
+                 : (state.jobId && recent.some(r => r.id === state.jobId)) ? state.jobId
+                 : (recent[0] && recent[0].id) || null;
+  return { runId, resultId, active: (running ? 1 : 0) + waiting.length };
 }
+
+function renderTabs() {
+  const { runId, resultId, active } = tabTargets();
+  state.tabRunTarget = runId;
+  state.tabResultTarget = resultId;
+
+  $('#tabImport').classList.toggle('on', state.view === 'import');
+  $('#tabRun').classList.toggle('on', state.view === 'run');
+  $('#tabResult').classList.toggle('on', state.view === 'result');
+
+  $('#tabRun').disabled = !runId;
+  $('#tabResult').disabled = !resultId;
+
+  const badge = $('#tabRunCount');
+  badge.textContent = active > 1 ? String(active) : '';   // 只有一个任务时不加角标
+  badge.style.display = active > 1 ? 'inline-block' : 'none';
+}
+
+$('#tabs').addEventListener('click', e => {
+  const t = e.target.closest('.tab');
+  if (!t || t.disabled) return;
+  const go = t.dataset.go;
+  if (go === 'import') {
+    if (state.view !== 'import') setView('import', true);
+    return;
+  }
+  const id = go === 'run' ? state.tabRunTarget : state.tabResultTarget;
+  if (!id) return;
+  if (id === state.jobId && state.view === go) return;   // 已经在这一页了
+  openJob(id, true);
+});
 
 // 打开一个已有任务（历史恢复、点最近任务、浏览器前进后退都走这里）
 function openJob(id, push = false) {
@@ -562,6 +617,8 @@ function openJob(id, push = false) {
 function loadRecent() {
   fetch('/api/jobs').then(r => r.json()).then(d => {
     const list = (d.jobs || []).filter(j => j.status === 'done');
+    state.recent = list;                       // 导航栏用它算「结果」该去哪
+    renderTabs();
     if (!list.length) { $('#recentWrap').style.display = 'none'; return; }
     $('#recentWrap').style.display = 'block';
     $('#recentList').innerHTML = list.map(j => {
@@ -596,8 +653,6 @@ $('#recentList').addEventListener('contextmenu', e => {
     .catch(() => showBanner('err', '打不开文件夹，请确认服务还在运行'))
     .finally(() => setTimeout(() => b.classList.remove('opening'), 600));
 });
-$('#btnBack').addEventListener('click', goImport);
-
 window.addEventListener('popstate', () => {
   const id = new URLSearchParams(location.search).get('job');
   if (id) openJob(id, false); else setView('import', false);
@@ -1015,7 +1070,7 @@ $('#btnAgain').addEventListener('click', () => {
   if (state.es) state.es.close();
   state.jobId = null; state.total = 0; state.loaded = 0; state.frames = [];
   $('#file').value = '';
-  goImport();
+  setView('import', true);
   $('#matteBar').classList.remove('done');
   $('#extractBar').classList.remove('done');
   picked.file = null; picked.info = null;
@@ -1040,6 +1095,7 @@ document.addEventListener('keydown', e => {
 // 启动：优先按 URL 里的 ?job= 打开，其次恢复上次看过的任务
 (function boot() {
   queueTick();                       // 队列状态常驻轮询，空队列时 5 秒一次
+  loadRecent();                      // 先取一次历史，导航栏才知道「结果」能不能点
   const id = new URLSearchParams(location.search).get('job');
   if (id) { openJob(id, false); return; }
 
