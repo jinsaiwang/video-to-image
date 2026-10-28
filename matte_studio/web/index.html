@@ -28,6 +28,8 @@
     border:1px solid var(--line); background:#fff; border-radius:8px; padding:8px 12px;
     cursor:pointer; font-family:inherit; text-align:left; transition:.12s; max-width:230px}
   .recent-item:hover{border-color:var(--accent); background:var(--accent-bg)}
+  .recent-item.opening{border-color:var(--accent); background:var(--accent-bg);
+                       box-shadow:0 0 0 3px var(--accent-bg)}
   .rname{font-size:12.5px; color:var(--ink); overflow:hidden; text-overflow:ellipsis;
          white-space:nowrap; max-width:100%}
   .rmeta{font-size:11.5px; color:var(--ink-3); font-variant-numeric:tabular-nums}
@@ -315,7 +317,7 @@
     </div>
 
     <div id="recentWrap" style="display:none; margin-top:20px; padding-top:18px; border-top:1px solid var(--line-soft)">
-      <div class="opt-label">最近任务 · 点击可重新打开</div>
+      <div class="opt-label">最近任务 · 点击可重新打开，右键打开所在文件夹</div>
       <div id="recentList" class="recent-list"></div>
     </div>
   </section>
@@ -565,8 +567,9 @@ function loadRecent() {
     $('#recentList').innerHTML = list.map(j => {
       const sp = j.speed && Math.abs(j.speed - 1) > 0.001 ? ` · ${j.speed}×` : '';
       const du = typeof j.duration === 'number' ? ` · ${j.duration.toFixed(2)} 秒` : '';
-      return `<button class="recent-item" data-id="${encodeURIComponent(j.id)}">
-        <span class="rname">${j.name}</span>
+      return `<button class="recent-item" data-id="${encodeURIComponent(j.id)}"
+        title="点击打开 · 右键打开所在文件夹">
+        <span class="rname">${esc(j.name)}</span>
         <span class="rmeta">${j.frames ?? '?'} 帧${sp}${du}</span>
       </button>`;
     }).join('');
@@ -576,6 +579,22 @@ function loadRecent() {
 $('#recentList').addEventListener('click', e => {
   const b = e.target.closest('.recent-item');
   if (b) openJob(decodeURIComponent(b.dataset.id), true);
+});
+
+// 右键最近产物 → 在资源管理器里打开它所在的文件夹（有 alpha 就进 alpha）
+$('#recentList').addEventListener('contextmenu', e => {
+  const b = e.target.closest('.recent-item');
+  if (!b) return;
+  e.preventDefault();
+  const id = decodeURIComponent(b.dataset.id);
+  b.classList.add('opening');
+  fetch(`/api/jobs/${encodeURIComponent(id)}/open`, { method: 'POST' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) showBanner('err', '打不开文件夹：' + d.error);
+    })
+    .catch(() => showBanner('err', '打不开文件夹，请确认服务还在运行'))
+    .finally(() => setTimeout(() => b.classList.remove('opening'), 600));
 });
 $('#btnBack').addEventListener('click', goImport);
 
