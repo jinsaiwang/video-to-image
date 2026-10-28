@@ -194,6 +194,9 @@
         font-family:inherit; padding:3px 10px; border-radius:6px; cursor:pointer;
         flex:0 0 auto; transition:.12s}
   .qbtn:hover{border-color:var(--warn); color:var(--warn); background:var(--warn-bg)}
+  .qacts{display:flex; gap:6px; flex:0 0 auto}
+  .qbtn.go{border-color:var(--line); color:var(--accent)}
+  .qbtn.go:hover{border-color:var(--accent); color:var(--accent); background:var(--accent-bg)}
   .qnote{padding:11px 15px; border-radius:10px; background:var(--amber-bg); color:var(--amber);
          border:1px solid #F0DEB8; font-size:12.5px; margin-bottom:16px; line-height:1.5}
   .qnote b{font-weight:600}
@@ -443,7 +446,10 @@ function renderQueue(q) {
         <div class="qmeta">${p.total ? `${label} ${p.done} / ${p.total} 帧` : '准备中…'}</div>
         ${p.total ? `<div class="qbar"><i style="width:${pct}%"></i></div>` : ''}
       </div>
-      <button class="qbtn" data-stop="1">停止</button>
+      <div class="qacts">
+        <button class="qbtn go" data-open="1">看进度</button>
+        <button class="qbtn" data-stop="1">停止</button>
+      </div>
     </div>`;
   }
   waiting.forEach((w, i) => {
@@ -483,6 +489,7 @@ $('#qList').addEventListener('click', e => {
   const row = e.target.closest('.qrow');
   if (!row) return;
   const id = decodeURIComponent(row.dataset.id);
+  if (e.target.dataset.open) { openJob(id, true); return; }
   if (e.target.dataset.stop) {
     row.style.opacity = '.45';
     fetch(`/api/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
@@ -504,16 +511,26 @@ function setView(view, push = true) {
   const url = view === 'import'
     ? location.pathname
     : `${location.pathname}?job=${encodeURIComponent(state.jobId)}`;
+  // fromApp 记录「这条历史是我们自己推的」，返回时才知道能不能退
+  const st = { view, job: state.jobId,
+               fromApp: push || !!(history.state && history.state.fromApp) };
   if (push) {
-    history.pushState({ view, job: state.jobId }, '', url);
+    history.pushState(st, '', url);
   } else {
-    history.replaceState({ view, job: state.jobId }, '', url);
+    history.replaceState(st, '', url);
   }
   if (view !== 'import' && state.jobId) {
     try { localStorage.setItem('matte_last_job', state.jobId); } catch (e) {}
   }
   if (view === 'import') loadRecent();
   if (state.queue) renderQueue(state.queue);   // 队列卡片只在导入页显示
+}
+
+// 「返回」必须用 back()，不能 pushState：压新记录的话历史里永远没有「下一条」，
+// 浏览器的前进按钮就一直是灰的 —— 退回导入页之后再也点不回进度页。
+function goImport() {
+  if (history.state && history.state.fromApp) history.back();
+  else setView('import', false);              // 直接打开的链接，没有可退的历史
 }
 
 // 打开一个已有任务（历史恢复、点最近任务、浏览器前进后退都走这里）
@@ -560,7 +577,7 @@ $('#recentList').addEventListener('click', e => {
   const b = e.target.closest('.recent-item');
   if (b) openJob(decodeURIComponent(b.dataset.id), true);
 });
-$('#btnBack').addEventListener('click', () => setView('import', true));
+$('#btnBack').addEventListener('click', goImport);
 
 window.addEventListener('popstate', () => {
   const id = new URLSearchParams(location.search).get('job');
@@ -862,7 +879,7 @@ function loadResult() {
     state.total = r.frames;
     state.fps = r.fps || 24;
 
-    setView('result', state.view === 'run');
+    setView('result', false);      // 用 replace：跑完是同一条历史，别再压新记录
 
     $('#stats').innerHTML = `
       <div class="stat ok"><div class="k">透明帧</div><div class="v">${r.frames} 张</div></div>
@@ -979,7 +996,7 @@ $('#btnAgain').addEventListener('click', () => {
   if (state.es) state.es.close();
   state.jobId = null; state.total = 0; state.loaded = 0; state.frames = [];
   $('#file').value = '';
-  setView('import', true);
+  goImport();
   $('#matteBar').classList.remove('done');
   $('#extractBar').classList.remove('done');
   picked.file = null; picked.info = null;
