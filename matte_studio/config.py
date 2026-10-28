@@ -75,10 +75,12 @@ class Config:
     host: str = "127.0.0.1"
     port: int = 7860
     open_browser: bool = True
+    allow_multiple: bool = False   # 允许同一端口上再起一个服务（默认接管已有实例）
 
     @classmethod
     def load(cls, model_dir=None, jobs_dir=None, host=None,
-             port=None, open_browser=None, backend=None) -> "Config":
+             port=None, open_browser=None, backend=None,
+             allow_multiple=False) -> "Config":
         cfg = cls(
             model_dir=resolve_model_dir(model_dir),
             jobs_dir=resolve_jobs_dir(jobs_dir),
@@ -86,6 +88,7 @@ class Config:
             host=host or os.environ.get("MATTE_HOST") or "127.0.0.1",
             port=int(port or os.environ.get("MATTE_PORT") or 7860),
             open_browser=True if open_browser is None else bool(open_browser),
+            allow_multiple=bool(allow_multiple),
         )
         cfg.jobs_dir.mkdir(parents=True, exist_ok=True)
         return cfg

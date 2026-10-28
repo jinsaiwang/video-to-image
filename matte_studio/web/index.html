@@ -170,6 +170,34 @@
   .banner.wait{background:var(--amber-bg); color:var(--amber); border:1px solid #F0DEB8}
   .banner.hide{display:none}
   #loadingHint{font-size:12px; color:var(--ink-3); margin-top:10px}
+
+  /* 任务队列 */
+  .qrow{display:flex; align-items:center; gap:12px; padding:11px 0;
+        border-top:1px solid var(--line-soft); cursor:pointer}
+  .qrow:first-child{border-top:0; padding-top:2px}
+  .qrow:hover .qname{color:var(--accent)}
+  .qidx{flex:0 0 20px; text-align:center; font-size:12px; color:var(--ink-3);
+        font-variant-numeric:tabular-nums}
+  .qidx.run{color:var(--ok); font-size:11px}
+  .qmain{flex:1; min-width:0}
+  .qname{font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+         display:flex; align-items:center; gap:7px}
+  .qmeta{font-size:11.5px; color:var(--ink-3); font-variant-numeric:tabular-nums;
+         margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .qbar{height:3px; background:var(--line-soft); border-radius:2px; margin-top:7px;
+        overflow:hidden; max-width:420px}
+  .qbar i{display:block; height:100%; background:var(--ok); width:0; transition:width .3s linear}
+  .qtag{font-size:11px; font-weight:400; padding:1px 7px; border-radius:20px;
+        background:var(--ok-bg); color:var(--ok); flex:0 0 auto}
+  .qtag.wait{background:var(--amber-bg); color:var(--amber)}
+  .qbtn{border:1px solid var(--line); background:#fff; color:var(--ink-3); font-size:12px;
+        font-family:inherit; padding:3px 10px; border-radius:6px; cursor:pointer;
+        flex:0 0 auto; transition:.12s}
+  .qbtn:hover{border-color:var(--warn); color:var(--warn); background:var(--warn-bg)}
+  .qnote{padding:11px 15px; border-radius:10px; background:var(--amber-bg); color:var(--amber);
+         border:1px solid #F0DEB8; font-size:12.5px; margin-bottom:16px; line-height:1.5}
+  .qnote b{font-weight:600}
+  .qnote.hide{display:none}
 </style>
 </head>
 <body>
@@ -181,6 +209,17 @@
   </header>
 
   <div class="banner hide" id="banner"></div>
+
+  <!-- 任务队列：一次只跑一个，先提交的先做 -->
+  <section class="card hidden" id="sec-queue">
+    <p class="card-title" style="display:flex;justify-content:space-between;margin-bottom:10px">
+      <span>任务队列</span><span id="qSummary" style="font-weight:400;color:var(--ink-3)"></span>
+    </p>
+    <div id="qList"></div>
+    <div class="hint" style="margin-top:12px">
+      同一张显卡同时跑两个任务会爆显存，所以这里排队依次处理。点任意一行可以切过去看进度。
+    </div>
+  </section>
 
   <!-- 导入 -->
   <section class="card" id="sec-import">
@@ -282,6 +321,8 @@
   <section class="card hidden" id="sec-run">
     <p class="card-title" id="runTitle">处理中</p>
 
+    <div class="qnote hide" id="queuedNote"></div>
+
     <div class="stage-row">
       <div class="stage-head"><span>1 · 抽帧</span><span class="n" id="extractNum">0 / 0</span></div>
       <div class="bar" id="extractBar"><i></i></div>
@@ -338,7 +379,12 @@
 <script>
 const $ = s => document.querySelector(s);
 const state = { jobId: null, total: 0, fps: 24, playing: false, frames: [],
-                loaded: 0, es: null, view: 'import' };
+                loaded: 0, es: null, view: 'import', queue: null, jobName: '' };
+
+// 文件名可能带 < > & 等字符，塞进 innerHTML 前必须转义
+const esc = s => String(s ?? '').replace(/[&<>"]/g,
+  c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
 
 // ---------- 环境信息 ----------
 fetch('/api/info').then(r => r.json()).then(info => {
@@ -357,6 +403,95 @@ function showBanner(kind, text) {
   b.textContent = text;
 }
 function hideBanner() { $('#banner').className = 'banner hide'; }
+
+// ---------- 任务队列 ----------
+// 服务端只有一个消费线程（一次跑一个任务），这里只负责把「排第几」显示出来。
+// 进度靠 SSE，队列变化靠轮询 —— 排队信息不属于某个任务，没法走单个任务的流。
+let qTimer = null;
+
+function pollQueue() {
+  fetch('/api/queue').then(r => r.json()).then(renderQueue).catch(() => {});
+}
+
+function queueTick() {
+  if (qTimer) clearTimeout(qTimer);
+  if (!document.hidden) pollQueue();
+  const busy = state.queue && (state.queue.running ||
+                              (state.queue.waiting || []).length);
+  qTimer = setTimeout(queueTick, busy ? 1200 : 5000);
+}
+
+function renderQueue(q) {
+  if (!q) return;
+  state.queue = q;
+  const running = q.running, waiting = q.waiting || [];
+  const total = (running ? 1 : 0) + waiting.length;
+
+  $('#sec-queue').classList.toggle('hidden', !(total > 0 && state.view === 'import'));
+  $('#qSummary').textContent = total
+    ? (running ? `处理中 1 · 等待 ${waiting.length}` : `等待 ${waiting.length}`) : '';
+
+  let html = '';
+  if (running) {
+    const p = running.progress || {};
+    const pct = p.total ? Math.min(100, p.done / p.total * 100) : 0;
+    const label = p.stage === 'matte' ? '抠图' : (p.stage === 'extract' ? '抽帧' : '');
+    html += `<div class="qrow" data-id="${encodeURIComponent(running.id)}">
+      <span class="qidx run">▶</span>
+      <div class="qmain">
+        <div class="qname"><span style="overflow:hidden;text-overflow:ellipsis">${esc(running.name)}</span><span class="qtag">处理中</span></div>
+        <div class="qmeta">${p.total ? `${label} ${p.done} / ${p.total} 帧` : '准备中…'}</div>
+        ${p.total ? `<div class="qbar"><i style="width:${pct}%"></i></div>` : ''}
+      </div>
+      <button class="qbtn" data-stop="1">停止</button>
+    </div>`;
+  }
+  waiting.forEach((w, i) => {
+    html += `<div class="qrow" data-id="${encodeURIComponent(w.id)}">
+      <span class="qidx">${i + 1}</span>
+      <div class="qmain">
+        <div class="qname"><span style="overflow:hidden;text-overflow:ellipsis">${esc(w.name)}</span><span class="qtag wait">等待中</span></div>
+        <div class="qmeta">${w.frames ? w.frames + ' 帧 · ' : ''}${w.ahead > 0 ? `前面还有 ${w.ahead} 个` : '下一个开始'}</div>
+      </div>
+      <button class="qbtn" data-stop="1">取消</button>
+    </div>`;
+  });
+  $('#qList').innerHTML = html;
+  renderQueuedNote();
+}
+
+// 当前正在看的任务如果还在排队，就在运行页顶部说明「前面还有几个」
+function renderQueuedNote() {
+  const el = $('#queuedNote'), q = state.queue;
+  const me = q && (q.waiting || []).find(w => w.id === state.jobId);
+  if (!me) {
+    el.classList.add('hide');
+    $('#btnCancel').textContent = '停止';
+    return;
+  }
+  const running = q.running;
+  el.classList.remove('hide');
+  // 排队阶段还没有任何帧，别显示「等待首帧…」让人以为已经在跑
+  $('#liveBox').style.display = 'none';
+  $('#btnCancel').textContent = '取消排队';
+  el.innerHTML = me.ahead > 0
+    ? `<b>排队中</b> · 前面还有 ${me.ahead} 个任务${running ? `，正在处理「${esc(running.name)}」` : ''}`
+    : `<b>排队中</b> · 它是下一个${running ? `，「${esc(running.name)}」完成后立刻开始` : ''}`;
+}
+
+$('#qList').addEventListener('click', e => {
+  const row = e.target.closest('.qrow');
+  if (!row) return;
+  const id = decodeURIComponent(row.dataset.id);
+  if (e.target.dataset.stop) {
+    row.style.opacity = '.45';
+    fetch(`/api/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
+      .then(() => { if (id === state.jobId) addLog('已请求停止'); pollQueue(); });
+    return;
+  }
+  openJob(id, true);
+});
+
 
 // ---------- 视图路由：让浏览器返回键可用、刷新不丢状态 ----------
 function setView(view, push = true) {
@@ -378,6 +513,7 @@ function setView(view, push = true) {
     try { localStorage.setItem('matte_last_job', state.jobId); } catch (e) {}
   }
   if (view === 'import') loadRecent();
+  if (state.queue) renderQueue(state.queue);   // 队列卡片只在导入页显示
 }
 
 // 打开一个已有任务（历史恢复、点最近任务、浏览器前进后退都走这里）
@@ -391,8 +527,10 @@ function openJob(id, push = false) {
         return;
       }
       if (job.status === 'running' || job.status === 'queued') {
-        $('#runTitle').textContent = `处理中 · ${job.name || job.id}`;
-        $('#liveBox').style.display = 'flex';
+        state.jobName = job.name || job.id;
+        $('#runTitle').textContent = (job.status === 'queued' ? '排队中 · ' : '处理中 · ')
+                                     + state.jobName;
+        $('#liveBox').style.display = job.status === 'queued' ? 'none' : 'flex';
         setView('run', push);
         connectSSE(id);
       } else {
@@ -580,8 +718,10 @@ function startProcess() {
     digits: $('#digitsSel').value,
   });
 
+  state.jobName = picked.file.name;
   setView('run', true);
-  $('#runTitle').textContent = `处理中 · ${picked.file.name}`;
+  $('#runTitle').textContent = `处理中 · ${state.jobName}`;
+  $('#queuedNote').classList.add('hide');
   $('#log').innerHTML = '';
   $('#liveBox').style.display = 'none';
   ['#matteBar', '#extractBar'].forEach(s => {
@@ -599,7 +739,13 @@ function startProcess() {
       // 改了任务名时服务端会重命名目录，任务 ID 随之变化，必须同步
       if (d.job) state.jobId = d.job;
       setView('run', false);
-      addLog('任务已启动：' + state.jobId);
+      if (d.ahead > 0) {
+        $('#runTitle').textContent = `排队中 · ${state.jobName}`;
+        addLog(`已加入队列，前面还有 ${d.ahead} 个任务`);
+      } else {
+        addLog('任务已启动：' + state.jobId);
+      }
+      pollQueue();
       connectSSE(state.jobId);
     })
     .catch(err => {
@@ -633,8 +779,17 @@ function connectSSE(jobId) {
 let matteTimes = [];
 function handleEvent(ev) {
   const { stage } = ev;
+  if (stage === 'queued' || stage === 'queue') {
+    $('#runTitle').textContent = `排队中 · ${state.jobName || state.jobId}`;
+    if (ev.msg) addLog(ev.msg);
+    pollQueue();
+  }
   if (stage === 'start' || stage === 'probe') {
+    $('#queuedNote').classList.add('hide');
+    $('#btnCancel').textContent = '停止';
+    $('#runTitle').textContent = `处理中 · ${state.jobName || state.jobId}`;
     addLog(ev.msg || '开始');
+    pollQueue();
   }
   if (stage === 'extract') {
     const t = ev.total || 0;
@@ -680,10 +835,12 @@ function handleEvent(ev) {
       showBanner('err', '出错了：' + (ev.msg || '未知错误'));
       addLog(ev.msg || '');
       if (ev.traceback) addLog(ev.traceback.split('\n').slice(-4).join(' '));
+      pollQueue();
       return;
     }
     $('#matteBar').classList.add('done');
     addLog(ev.msg || stage);
+    pollQueue();
     // 用户已经返回到导入页时，不要突然把他拽回结果页
     if (state.view === 'run') setTimeout(() => loadResult(), 300);
     else loadRecent();
@@ -694,7 +851,11 @@ function handleEvent(ev) {
 function loadResult() {
   fetch(`/api/jobs/${state.jobId}`).then(r => r.json()).then(job => {
     if (!job.result) {
-      if (job.status === 'cancelled') { addLog('任务已取消，已完成的帧保留在输出目录'); }
+      if (job.status === 'cancelled') {
+        addLog('任务已取消，已完成的帧保留在输出目录');
+        // 排队阶段被取消的任务一张帧都没有，别把用户留在空白运行页
+        setTimeout(() => setView('import', true), 600);
+      }
       return;
     }
     const r = job.result;
@@ -822,6 +983,8 @@ $('#btnAgain').addEventListener('click', () => {
   $('#matteBar').classList.remove('done');
   $('#extractBar').classList.remove('done');
   picked.file = null; picked.info = null;
+  $('#queuedNote').classList.add('hide');
+  pollQueue();
   const pv = $('#preview');
   pv.pause(); pv.removeAttribute('src'); pv.load();
   $('#drop').classList.remove('hidden');
@@ -840,6 +1003,7 @@ document.addEventListener('keydown', e => {
 
 // 启动：优先按 URL 里的 ?job= 打开，其次恢复上次看过的任务
 (function boot() {
+  queueTick();                       // 队列状态常驻轮询，空队列时 5 秒一次
   const id = new URLSearchParams(location.search).get('job');
   if (id) { openJob(id, false); return; }
 

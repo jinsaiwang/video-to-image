@@ -42,6 +42,9 @@ class Job:
         self.video_path: Optional[str] = None
         self.started_at: Optional[float] = None
         self.finished_at: Optional[float] = None
+        self.queued_at: Optional[float] = None
+        self.queue_ahead: int = 0                # 前面还有几个任务，0 = 下一个就是它
+        self.progress: dict = {}                 # 最近一次抽帧/抠图进度，给队列面板用
         self._file_cache: dict[str, list[Path]] = {}
         self._lock = threading.Lock()
 
@@ -49,6 +52,10 @@ class Job:
     def emit(self, **event):
         event["t"] = time.time()
         event["status"] = self.status
+        # 只记这两个阶段：队列面板要显示「正在处理的任务跑到第几帧」
+        if event.get("stage") in ("extract", "matte") and "total" in event:
+            self.progress = {"stage": event["stage"], "done": event.get("done", 0),
+                             "total": event.get("total", 0)}
         with self._lock:
             self.events.append(event)
             if len(self.events) > 200:
@@ -80,6 +87,7 @@ class Job:
             "status": self.status, "result": self.result, "error": self.error,
             "info": self.info, "started_at": self.started_at,
             "finished_at": self.finished_at, "dir": str(self.dir),
+            "ahead": self.queue_ahead, "progress": self.progress,
         }
 
     @classmethod
@@ -117,6 +125,9 @@ class Job:
         obj.video_path = None
         obj.started_at = None
         obj.finished_at = result_file.stat().st_mtime
+        obj.queued_at = None
+        obj.queue_ahead = 0
+        obj.progress = {}
         obj._file_cache = {}
         obj._lock = threading.Lock()
         return obj

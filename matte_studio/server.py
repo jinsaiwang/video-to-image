@@ -30,35 +30,145 @@ MAX_UPLOAD = 2 * 1024 ** 3          # 2GB
 
 
 class App:
-    """把配置、任务表、GPU 锁集中在一处，方便测试时替换。"""
+    """把配置、任务表、任务队列集中在一处，方便测试时替换。
+
+    队列只有一个消费线程：一张 8G 显卡同时跑两个抠图任务会直接 OOM，
+    所以并发不是并行，而是「先进先出地一个个做」。位置由提交顺序决定，
+    不靠线程调度抢 —— 抢出来的顺序用户看不懂，也没法显示「排第几」。
+    """
 
     def __init__(self, config: Config):
         self.config = config
         self.store = JobStore()
-        self.gpu_lock = threading.Semaphore(1)
         self.restored = self.store.restore(config.jobs_dir)
+        self._cond = threading.Condition()
+        self._pending: list[str] = []            # 等待中的任务 id，FIFO
+        self._running: str | None = None
+        self._worker: threading.Thread | None = None
 
-    # ---------- 任务执行 ----------
-    def start_job(self, job: Job):
+    # ---------- 队列 ----------
+    @staticmethod
+    def queue_msg(ahead: int) -> str:
+        if ahead <= 0:
+            return "下一个就是它，马上开始"
+        return f"排队中，前面还有 {ahead} 个任务"
+
+    def submit(self, job: Job) -> int:
+        """放进队列并立刻返回排队位置。请求线程不等模型，只回一句「排第几」。"""
+        with self._cond:
+            self._pending.append(job.id)
+            job.status = "queued"
+            job.queued_at = time.time()
+            job.queue_ahead = len(self._pending) - 1 + (1 if self._running else 0)
+            ahead = job.queue_ahead
+            spawn = self._worker is None
+            if spawn:
+                # 线程先建好但不启动：等「已排队」事件发出去再开，
+                # 否则消费者可能抢先把它置为 running，界面顺序就反了
+                self._worker = threading.Thread(target=self._work, daemon=True,
+                                                name="matte-worker")
+            else:
+                # 队列空转时工作线程停在 wait() 上，必须叫醒它
+                self._cond.notify()
+
+        job.emit(stage="queued", ahead=ahead, msg=self.queue_msg(ahead))
+        self._sync_queued()
+        if spawn:
+            self._worker.start()
+        return ahead
+
+    def _work(self):
+        while True:
+            with self._cond:
+                while not self._pending:
+                    self._cond.wait()
+                job_id = self._pending.pop(0)
+                job = self.store.get(job_id)
+                self._running = job_id if job else None
+            if job is not None:
+                self._run_one(job)
+            with self._cond:
+                self._running = None
+            self._sync_queued()                  # 后面的人各前进一位
+
+    def _run_one(self, job: Job):
         job.status = "running"
+        job.queue_ahead = 0
         job.started_at = time.time()
+        job.progress = {}
         job.emit(stage="start", msg=f"任务开始：{job.name}")
-        with self.gpu_lock:
-            try:
-                runner.run_job(job, self.config.require_model(),
-                               backend=self.config.active_backend or "auto",
-                               on_progress=lambda ev: job.emit(**ev),
-                               should_stop=job.stop_flag.is_set)
-                job.status = "cancelled" if job.stop_flag.is_set() else "done"
-                job.emit(stage=job.status,
-                         msg="已取消" if job.status == "cancelled" else "全部完成")
-            except Exception as exc:
-                job.status = "error"
-                job.error = f"{type(exc).__name__}: {exc}"
-                job.emit(stage="error", msg=job.error,
-                         traceback=traceback.format_exc()[-1500:])
-        job.finished_at = time.time()
-        job.invalidate()
+        try:
+            runner.run_job(job, self.config.require_model(),
+                           backend=self.config.active_backend or "auto",
+                           on_progress=lambda ev: job.emit(**ev),
+                           should_stop=job.stop_flag.is_set)
+            job.status = "cancelled" if job.stop_flag.is_set() else "done"
+            job.emit(stage=job.status,
+                     msg="已取消" if job.status == "cancelled" else "全部完成")
+        except Exception as exc:
+            job.status = "error"
+            job.error = f"{type(exc).__name__}: {exc}"
+            job.emit(stage="error", msg=job.error,
+                     traceback=traceback.format_exc()[-1500:])
+        finally:
+            job.finished_at = time.time()
+            job.invalidate()
+
+    def _positions(self) -> dict[str, int]:
+        """每个等待中的任务「前面还有几个」。调用方需持有 _cond。"""
+        base = 1 if self._running else 0
+        return {jid: base + i for i, jid in enumerate(self._pending)}
+
+    def _sync_queued(self):
+        """位置发生变化时通知对应任务的 SSE 订阅者，界面不用轮询也能更新。"""
+        with self._cond:
+            positions = self._positions()
+        for jid, ahead in positions.items():
+            job = self.store.get(jid)
+            if job and job.status == "queued" and job.queue_ahead != ahead:
+                job.queue_ahead = ahead
+                job.emit(stage="queue", ahead=ahead, msg=self.queue_msg(ahead))
+
+    def queue_snapshot(self) -> dict:
+        with self._cond:
+            running_id, waiting = self._running, list(self._pending)
+            base = 1 if running_id else 0
+        running = self.store.get(running_id) if running_id else None
+        items = []
+        for i, jid in enumerate(waiting):
+            job = self.store.get(jid)
+            if not job:
+                continue
+            items.append({
+                "id": job.id, "name": job.name, "ahead": base + i,
+                "frames": job.info.get("total_frames"),
+                "status": job.status,
+            })
+        return {
+            "running": ({
+                "id": running.id, "name": running.name, "status": running.status,
+                "progress": running.progress, "started_at": running.started_at,
+            } if running else None),
+            "waiting": items,
+            "count": len(items),
+        }
+
+    def cancel(self, job: Job) -> dict:
+        """排队中的直接移出队列；正在跑的置停止位，由流水线自行收尾。"""
+        job.stop_flag.set()
+        removed = False
+        with self._cond:
+            if job.id in self._pending:
+                self._pending.remove(job.id)
+                removed = True
+        if removed:
+            job.status = "cancelled"
+            job.finished_at = time.time()
+            job.emit(stage="cancelled", msg="已取消（还在排队，没有开始处理）")
+            self._sync_queued()
+            return {"ok": True, "dequeued": True}
+        job.emit(stage="cancel_request", msg="正在停止，处理完当前帧后退出")
+        return {"ok": True, "dequeued": False}
 
 
 def frame_bytes(job: Job, index: int, kind: str, width: int):
@@ -141,6 +251,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/jobs":
             return self._json({"jobs": self.app.store.recent()})
 
+        if path == "/api/queue":
+            return self._json(self.app.queue_snapshot())
+
         if path.startswith("/api/jobs/") and path.endswith("/events"):
             return self._sse(path.split("/")[3])
 
@@ -179,10 +292,7 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/jobs/") and path.endswith("/start"):
             return self._start_job(qs, path.strip("/").split("/")[2])
         if path.startswith("/api/jobs/") and path.endswith("/cancel"):
-            return self._simple(path, lambda job: (job.stop_flag.set(),
-                                                   job.emit(stage="cancel_request",
-                                                            msg="正在停止，处理完当前帧后退出"),
-                                                   {"ok": True})[-1])
+            return self._simple(path, self.app.cancel)
         if path.startswith("/api/jobs/") and path.endswith("/open"):
             return self._simple(path, self._open_folder)
 
@@ -255,9 +365,10 @@ class Handler(BaseHTTPRequestHandler):
         if want:
             self._rename_job(job, want)
 
-        threading.Thread(target=self.app.start_job, args=(job,), daemon=True).start()
+        ahead = self.app.submit(job)
         return self._json({"ok": True, "job": job.id, "dir": job.dir.name,
-                           "config": job.config})
+                           "config": job.config, "ahead": ahead,
+                           "queue": self.app.queue_snapshot()})
 
     def _rename_job(self, job: Job, want: str):
         target = job.dir.parent / safe_name(want, fallback=job.id)
@@ -357,6 +468,27 @@ def port_in_use(host: str, port: int) -> bool:
         return s.connect_ex((host, port)) == 0
 
 
+def existing_instance(host: str, port: int, timeout: float = 0.7) -> str | None:
+    """该端口上是不是已经跑着一个 Matte Studio？是则返回它的版本号。
+
+    双击两次快捷方式就会走到这里：第二个进程原本会顺着端口 +1 另起一套服务，
+    两个进程各持一张卡同时开工 —— 8G 显存扛不住，界面表现就是「卡死」。
+    所以改成接管已有实例：任务队列本来就在同一个进程里。
+    """
+    import urllib.request
+
+    probe = "127.0.0.1" if host in ("", "0.0.0.0") else host
+    try:
+        with urllib.request.urlopen(f"http://{probe}:{port}/api/info",
+                                    timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    if isinstance(data, dict) and "jobs_dir" in data and "version" in data:
+        return str(data["version"])
+    return None
+
+
 def create_server(config: Config, tries: int = 20):
     """在 config.port 起向上找一个真正空闲的端口。"""
     app = App(config)
@@ -378,8 +510,24 @@ def create_server(config: Config, tries: int = 20):
 
 
 def serve(config: Config):
-    httpd, app = create_server(config)
     url = f"http://{config.host}:{config.port}"
+
+    if not config.allow_multiple:
+        running = existing_instance(config.host, config.port)
+        if running:
+            print("=" * 58)
+            print(f"  已经有一个 Matte Studio 在跑（v{running}）")
+            print("=" * 58)
+            print(f"  地址：{url}")
+            print("  任务会在这个进程里排队，不需要再开一个 ——")
+            print("  两个进程各占一张卡，同时开工会直接爆显存。")
+            print("  确实要并行跑多份，加 --multiple 指定不同 --port/--jobs-dir。")
+            print("=" * 58)
+            if config.open_browser:
+                _open_browser(url)
+            return
+
+    httpd, app = create_server(config)
 
     print("=" * 58)
     print(f"  Matte Studio v{__version__}  ·  视频转透明连续帧")

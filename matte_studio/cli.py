@@ -39,6 +39,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--host", default=None, help="监听地址，默认 127.0.0.1")
     p_serve.add_argument("--port", type=int, default=None, help="端口，默认 7860（占用则自动顺延）")
     p_serve.add_argument("--no-browser", action="store_true", help="不要自动打开浏览器")
+    p_serve.add_argument("--multiple", action="store_true",
+                         help="允许再起一个服务（默认：端口上已有实例就接管它，不重复占用显存）")
 
     # ---- run ----
     p_run = sub.add_parser("run", help="无界面跑完整个流程")
@@ -186,6 +188,7 @@ def main(argv=None) -> int:
         port=getattr(args, "port", None),
         backend=getattr(args, "backend", None),
         open_browser=(False if getattr(args, "no_browser", False) else None),
+        allow_multiple=bool(getattr(args, "multiple", False)),
     )
 
     if command == "info":

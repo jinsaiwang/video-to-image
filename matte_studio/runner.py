@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import backends, frames, matte
 from .naming import frame_name
 
 
@@ -18,6 +17,10 @@ def run_job(
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> dict:
     """跑完一个任务，返回结果 dict，同时写入 result.json。"""
+    # 放在函数里导入：frames 依赖 OpenCV、matte 依赖 Pillow 等重包，
+    # 放到模块顶层会让「只想用队列/界面」的场景也必须先把它们装齐。
+    from . import backends, frames, matte
+
     def emit(**kwargs):
         if on_progress:
             on_progress(kwargs)
